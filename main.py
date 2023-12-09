@@ -8,7 +8,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 
 
-log_formatter = logging.Formatter('%(asctime)s -- %(name)s:%(levelname)s: %(message)s')
+log_formatter = logging.Formatter('%(asctime)s -- %(name)s:%(levelname)s: %(message)s', '%Y-%m-%d %H:%M:%S')
 
 file_handler = logging.handlers.TimedRotatingFileHandler(filename="root.log", when="midnight", interval=1, backupCount=7, encoding="utf-8")
 file_handler.setLevel(logging.INFO)
@@ -40,18 +40,41 @@ conversation_logger.setLevel(logging.INFO)
 
 # Logging logic
 
+def logging_edited_messages(func):
+    @functools.wraps(func)
+    async def wrapper(*args, **kwargs):
+        response = await func(*args, **kwargs)
+        update = args[0]
+        message = update.edited_message
+        text = message.text
+        chat_type = message.chat.type
+        if chat_type == constants.PRIVATE:
+            chat_name: str = message.chat.full_name
+        else: 
+            chat_name: str = message.chat.title
+        conversation_logger.info(f"USER (@{message.from_user.username}) in {chat_type} ({repr(chat_name)}) edited a message: {text}")
+        return response
+    return wrapper
+
 def logging_incoming_messages(func):
     @functools.wraps(func)
     async def wrapper(*args, **kwargs):
         response = await func(*args, **kwargs)
         update = args[0]
-        chat_type: str = update.message.chat.type
-        if chat_type == 'private':
-            chat_name: str = update.message.chat.full_name
+        if update.message:
+            message: str = update.message
+            text = {att: getattr(message, att) for att in constants.MESSAGE_TYPES if getattr(message, att)}
+        elif update.callback_query:
+            message: str = update.callback_query.message
+            text = update.callback_query.data
+        chat_type = message.chat.type 
+        
+        if chat_type == constants.PRIVATE:
+            chat_name: str = message.chat.full_name
         else: 
-            chat_name: str = update.message.chat.title
-        attributes = {att: getattr(update.message, att) for att in constants.MESSAGE_TYPES if getattr(update.message, att)}
-        conversation_logger.info(f"USER (@{update.message.from_user.username}) in {chat_type} ({repr(chat_name)}): {attributes}")
+            chat_name: str = message.chat.title
+
+        conversation_logger.info(f"USER (@{message.from_user.username}) in {chat_type} ({repr(chat_name)}): {text}")
         return response
     return wrapper
 
@@ -61,11 +84,18 @@ def logging_bot_response(func):
         response = await func(*args, **kwargs)
         if response:
             update = args[0]
-            chat_type: str = update.message.chat.type
-            if chat_type == 'private':
-                chat_name: str = update.message.chat.full_name
+            
+            if update.message:
+                message: str = update.message
+            elif update.callback_query:
+                message: str = update.callback_query.message   
+            chat_type: str = message.chat.type
+            
+            if chat_type == constants.PRIVATE:
+                chat_name: str = message.chat.full_name
             else: 
-                chat_name: str = update.message.chat.title
+                chat_name: str = message.chat.title
+                
             conversation_logger.info(f"BOT ({constants.BOT_USERNAME}) in {chat_type} ({repr(chat_name)}): {repr(response)}")
         return response
     return wrapper
@@ -82,6 +112,7 @@ def logging_errors(func):
 # Commands
 
 @logging_bot_response
+@logging_incoming_messages
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [
@@ -95,17 +126,19 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     response = constants.START
     await update.message.reply_text(response, reply_markup=reply_markup)
     return response
-  
+ 
 @logging_bot_response
+@logging_incoming_messages  
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     response = constants.HELP
     await update.message.reply_text(response)
     return response
 
 @logging_bot_response
+@logging_incoming_messages
 async def all_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.chat.id == constants.CHAT_ID:
-        response = ", ".join(f"[@{k}](tg://user?id={v})" for k, v in constants.ALL.items())
+        response = ", ".join(f"[@{k}](tg://user?id={v})" for k, v in constants.TEAMMATES.items())
     else:
         response = "pass"
     await update.message.reply_text(response, parse_mode=constants.MARKDDOWN)
@@ -114,22 +147,28 @@ async def all_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Buttons
 
 @logging_bot_response
+@logging_incoming_messages
 async def start_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Parses the CallbackQuery and updates the message text."""
     
     query = update.callback_query
     await query.answer()
     if query.data == "calc":
-        response = "Держи: " + constants.CALCULATOR_LINK
+        response = "Here it is: " + constants.CALCULATOR_LINK
     elif query.data == "srvc":
-        response = constants.CREDENTIALS
+        uid = update.callback_query.from_user.id
+        if uid in constants.TEAMMATES.values():
+            response = constants.CREDENTIALS
+        else:
+            response = "Sorry, this data is confidential and is only availble to my Technical Support Teammates. 😔"
     else:
-        response = "Пака........."
+        response = "Paka........."
 
     await query.edit_message_text(text=response)
     return response
     
 @logging_bot_response
+@logging_incoming_messages
 async def pamyatka_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Parses the CallbackQuery and updates the message text."""
     
@@ -144,6 +183,11 @@ async def pamyatka_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return response
 
 # Responses
+
+@logging_edited_messages
+async def handle_edited_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    return
+
 
 @logging_bot_response 
 @logging_incoming_messages
@@ -171,13 +215,14 @@ def handle_response(update: Update, text: str):
         response = choice(constants.CUSS_OPTIONS)
     return response, reply_to_message_id
 
+
 @logging_bot_response
 @logging_incoming_messages
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_type: str = update.message.chat.type
     text: str = update.message.text
     
-    if chat_type in ["group", "supergroup"]:
+    if chat_type in constants.GROUP_TYPES:
         if constants.BOT_USERNAME in text:
             new_text: str = text.replace(constants.BOT_USERNAME, "").strip()
             response, reply_to_message_id = handle_response(update, new_text)
@@ -243,6 +288,7 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.Regex(re.compile("сашечк", flags=re.IGNORECASE)), handle_sashechka))
     app.add_handler(MessageHandler(filters.Regex(re.compile("молчи", flags=re.IGNORECASE)), handle_silence))
     app.add_handler(MessageHandler(filters.Regex(re.compile("кто мы|мы кто", flags=re.IGNORECASE)), handle_suki))
+    app.add_handler(MessageHandler(filters.UpdateType.EDITED_MESSAGE, handle_edited_messages))
     app.add_handler(MessageHandler(filters.TEXT, handle_message))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.ALL, handle_default))
