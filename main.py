@@ -10,7 +10,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 
 log_formatter = logging.Formatter('%(asctime)s -- %(name)s:%(levelname)s: %(message)s')
 
-file_handler = logging.handlers.TimedRotatingFileHandler(filename="root_log_file.log", when="midnight", interval=1, backupCount=7, encoding="utf-8")
+file_handler = logging.handlers.TimedRotatingFileHandler(filename="root.log", when="midnight", interval=1, backupCount=7, encoding="utf-8")
 file_handler.setLevel(logging.INFO)
 file_handler.setFormatter(log_formatter)
 
@@ -19,21 +19,23 @@ logging.getLogger().addHandler(file_handler)
 logging.getLogger('httpx').setLevel(logging.WARNING)
 logging.getLogger('telegram.ext.Application').setLevel(logging.INFO)
 
-# Creating a custom conversation logger to keep track of the conversation only
-logger = logging.getLogger("conversation")
-
-conversation_handler = logging.handlers.TimedRotatingFileHandler(filename='conversation.log', when='midnight', interval=1, backupCount=7, encoding="utf-8")
-conversation_handler.setLevel(logging.INFO)
-conversation_handler.setFormatter(log_formatter)
-logger.addHandler(conversation_handler)
-
-# Creating an error handler to keep track of errors only
+# Creating an error handler to keep track of errors (of the root logger) only
 error_handler = logging.handlers.TimedRotatingFileHandler(filename='errors.log', when='midnight', interval=1, backupCount=7, encoding="utf-8")
 error_handler.setLevel(logging.WARNING)
 error_handler.setFormatter(log_formatter)
-logger.addHandler(error_handler)
+logging.getLogger().addHandler(error_handler)
 
-logger.setLevel(logging.INFO)
+# Creating a custom conversation logger to keep track of the conversation only.
+# It will not be saved to a separate file, but will stream logs to the console
+# Logs from this logger will be included in the root log
+conversation_logger = logging.getLogger("conversation")
+
+conversation_handler =  logging.StreamHandler()
+conversation_handler.setLevel(logging.INFO)
+conversation_handler.setFormatter(log_formatter)
+conversation_logger.addHandler(conversation_handler)
+
+conversation_logger.setLevel(logging.INFO)
 
 
 # Logging logic
@@ -49,11 +51,11 @@ def logging_incoming_messages(func):
         else: 
             chat_name: str = update.message.chat.title
         attributes = {att: getattr(update.message, att) for att in constants.MESSAGE_TYPES if getattr(update.message, att)}
-        logger.info(f"USER (@{update.message.from_user.username}) in {chat_type} ({repr(chat_name)}): {attributes}")
+        conversation_logger.info(f"USER (@{update.message.from_user.username}) in {chat_type} ({repr(chat_name)}): {attributes}")
         return response
     return wrapper
 
-def logging_response(func):
+def logging_bot_response(func):
     @functools.wraps(func)
     async def wrapper(*args, **kwargs):
         response = await func(*args, **kwargs)
@@ -64,13 +66,22 @@ def logging_response(func):
                 chat_name: str = update.message.chat.full_name
             else: 
                 chat_name: str = update.message.chat.title
-            logger.info(f"BOT ({constants.BOT_USERNAME}) in {chat_type} ({repr(chat_name)}): {repr(response)}")
+            conversation_logger.info(f"BOT ({constants.BOT_USERNAME}) in {chat_type} ({repr(chat_name)}): {repr(response)}")
         return response
     return wrapper
-    
+
+def logging_errors(func):
+    @functools.wraps(func)
+    async def wrapper(*args, **kwargs):
+        response = await func(*args, **kwargs)
+        update, context = args[0], args[1]
+        conversation_logger.error(f"Update {update} caused error {context.error}")
+        return response
+    return wrapper
+        
 # Commands
 
-@logging_response
+@logging_bot_response
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [
@@ -85,13 +96,13 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(response, reply_markup=reply_markup)
     return response
   
-@logging_response
+@logging_bot_response
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     response = constants.HELP
     await update.message.reply_text(response)
     return response
 
-@logging_response
+@logging_bot_response
 async def all_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.chat.id == constants.CHAT_ID:
         response = ", ".join(f"[@{k}](tg://user?id={v})" for k, v in constants.ALL.items())
@@ -102,7 +113,7 @@ async def all_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Buttons
 
-@logging_response
+@logging_bot_response
 async def start_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Parses the CallbackQuery and updates the message text."""
     
@@ -118,7 +129,7 @@ async def start_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(text=response)
     return response
     
-@logging_response
+@logging_bot_response
 async def pamyatka_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Parses the CallbackQuery and updates the message text."""
     
@@ -134,7 +145,7 @@ async def pamyatka_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Responses
 
-@logging_response 
+@logging_bot_response 
 @logging_incoming_messages
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[InlineKeyboardButton(constants.YES, callback_data="y")], [InlineKeyboardButton(constants.NO, callback_data="n")]]
@@ -160,7 +171,7 @@ def handle_response(update: Update, text: str):
         response = choice(constants.CUSS_OPTIONS)
     return response, reply_to_message_id
 
-@logging_response
+@logging_bot_response
 @logging_incoming_messages
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_type: str = update.message.chat.type
@@ -178,28 +189,28 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(response, parse_mode=constants.MARKDDOWN, reply_to_message_id=reply_to_message_id)
     return response
  
-@logging_response
+@logging_bot_response
 @logging_incoming_messages
 async def handle_suki(update: Update, context: ContextTypes.DEFAULT_TYPE):
     response: str = constants.STICKER_WE
     await context.bot.send_sticker(chat_id=update.message.chat_id, sticker=response)
     return response  
 
-@logging_response
+@logging_bot_response
 @logging_incoming_messages
 async def handle_sashechka(update: Update, context: ContextTypes.DEFAULT_TYPE):
     response: str = choice(constants.STICKERS_SASHKA)
     await context.bot.send_sticker(chat_id=update.message.chat_id, sticker=response)
     return response
 
-@logging_response
+@logging_bot_response
 @logging_incoming_messages
 async def handle_silence(update: Update, context: ContextTypes.DEFAULT_TYPE):
     response: str = constants.STICKER_SILENCE
     await context.bot.send_sticker(chat_id=update.message.chat_id, sticker=response)
     return response
 
-@logging_response    
+@logging_bot_response    
 async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     response: str = constants.NO_COMMAND_FOUND_MESSAGE
     await context.bot.send_message(chat_id=update.effective_chat.id, text=response)
@@ -209,8 +220,9 @@ async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_default(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return    
 
+@logging_errors
 async def error(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.error(f"Update {update} caused error {context.error}")
+    return
     
     
 if __name__ == "__main__":
