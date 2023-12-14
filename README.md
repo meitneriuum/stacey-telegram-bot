@@ -17,7 +17,7 @@ Also this project has a pretty nice logging system. It is not that needed for a 
 1. First of all, I have added a custom `conversation` logger that keeps track of the users' messages and reactions of Stacey. It has the `INFO` logging level, and the logs are sent to the console.
 2. I have also configured the `root` logger to save full logs to a `root.log` file. It includes logs from all loggers that are used while the bot is running, so the resulting logs are full. However, I've set the `httpx` logger's level to `WARNING`, since I didn't need to gather all the http-requests.
 3. Also I have added a custom `error_handler` to the `root` logger, that saves all errors to a separate `errors.log` file. It makes it easier to track only errors when it's needed.
-4. Both `root.log` and `errors.log` files are being handled by `TimedRotatingFileHandler`. Each day at midnight new log files are created, making it easier to differentiate the days. The `backupCount` is equal to 7, so only the newest 7 log files are kept.
+4. Both `root.log` and `errors.log` files are being handled by `TimedRotatingFileHandler`. Every Sunday new log files are created, making it easier to differentiate the periods of time. The `backupCount` is equal to 7, so only the newest 7 log files are kept.
 5. Also I started using decorators for logging.
 
 For now this is it, thank you for reading this description :) I am planning to add some more features soon, so.. to be continued!
