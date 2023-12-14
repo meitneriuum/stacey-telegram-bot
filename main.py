@@ -3,99 +3,49 @@ import logging.handlers
 import functools
 import re
 from random import choice
-import constants
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 
+import constants
+from loggers import CustomLogger
 
-log_formatter = logging.Formatter('%(asctime)s -- %(name)s:%(levelname)s: %(message)s', '%Y-%m-%d %H:%M:%S')
 
-file_handler = logging.handlers.TimedRotatingFileHandler(filename="root.log", when="midnight", interval=1, backupCount=7, encoding="utf-8")
-file_handler.setLevel(logging.INFO)
-file_handler.setFormatter(log_formatter)
+root_logger = CustomLogger()
+root_logger.addHandler(logging.handlers.TimedRotatingFileHandler, **{'level': logging.INFO, 'filename': "root.log", 'when': constants.EVERY_SUNDAY, 'backupCount': constants.BACKUP_COUNT, 'encoding': constants.ENCODING})
+root_logger.addHandler(logging.handlers.TimedRotatingFileHandler, **{'level': logging.WARNING, 'filename': "errors.log", 'when': constants.EVERY_SUNDAY, 'backupCount': constants.BACKUP_COUNT, 'encoding': constants.ENCODING})
 
-# Using root logger to create full logs
-logging.getLogger().addHandler(file_handler)
 logging.getLogger('httpx').setLevel(logging.WARNING)
 logging.getLogger('telegram.ext.Application').setLevel(logging.INFO)
 
-# Creating an error handler to keep track of errors (of the root logger) only
-error_handler = logging.handlers.TimedRotatingFileHandler(filename='errors.log', when='midnight', interval=1, backupCount=7, encoding="utf-8")
-error_handler.setLevel(logging.WARNING)
-error_handler.setFormatter(log_formatter)
-logging.getLogger().addHandler(error_handler)
+# Creating a custom conversation logger to keep track of the conversation only. It will not be saved to a separate file, 
+# but will stream logs to the console. Logs from this logger will be included in the root log
+conversation_logger = CustomLogger("conversation")
+conversation_logger.addHandler(handler_class=logging.StreamHandler, level=logging.INFO)
 
-# Creating a custom conversation logger to keep track of the conversation only.
-# It will not be saved to a separate file, but will stream logs to the console
-# Logs from this logger will be included in the root log
-conversation_logger = logging.getLogger("conversation")
+# Logging decorators    
 
-conversation_handler =  logging.StreamHandler()
-conversation_handler.setLevel(logging.INFO)
-conversation_handler.setFormatter(log_formatter)
-conversation_logger.addHandler(conversation_handler)
-
-conversation_logger.setLevel(logging.INFO)
-
-
-# Logging logic
+def deconstruct_update(update: Update):
+    username = update.effective_user.name
+    text = update.effective_message.text    # Will need separate handling for answering callback queries (text = update.callback_query.data)
+    chat = update.effective_chat
+    return username, chat.type, chat.effective_name, text
 
 def logging_edited_messages(func):
     @functools.wraps(func)
     async def wrapper(*args, **kwargs):
         response = await func(*args, **kwargs)
-        update = args[0]
-        message = update.edited_message
-        text = message.text
-        chat_type = message.chat.type
-        if chat_type == constants.PRIVATE:
-            chat_name: str = message.chat.full_name
-        else: 
-            chat_name: str = message.chat.title
-        conversation_logger.info(f"USER (@{message.from_user.username}) in {chat_type} ({repr(chat_name)}) edited a message: {text}")
+        user, chat_type, chat_name, text = deconstruct_update(args[0])
+        conversation_logger.info(f"USER ({user}) in {chat_type} ({repr(chat_name)}) edited a message: {repr(text)}")
         return response
     return wrapper
 
-def logging_incoming_messages(func):
+def logging_messages(func):
     @functools.wraps(func)
     async def wrapper(*args, **kwargs):
         response = await func(*args, **kwargs)
-        update = args[0]
-        if update.message:
-            message: str = update.message
-            text = {att: getattr(message, att) for att in constants.MESSAGE_TYPES if getattr(message, att)}
-        elif update.callback_query:
-            message: str = update.callback_query.message
-            text = update.callback_query.data
-        chat_type = message.chat.type 
-        
-        if chat_type == constants.PRIVATE:
-            chat_name: str = message.chat.full_name
-        else: 
-            chat_name: str = message.chat.title
-
-        conversation_logger.info(f"USER (@{message.from_user.username}) in {chat_type} ({repr(chat_name)}): {text}")
-        return response
-    return wrapper
-
-def logging_bot_response(func):
-    @functools.wraps(func)
-    async def wrapper(*args, **kwargs):
-        response = await func(*args, **kwargs)
+        user, chat_type, chat_name, text = deconstruct_update(args[0])
+        conversation_logger.info(f"USER ({user}) in {chat_type} ({repr(chat_name)}): {repr(text)}")
         if response:
-            update = args[0]
-            
-            if update.message:
-                message: str = update.message
-            elif update.callback_query:
-                message: str = update.callback_query.message   
-            chat_type: str = message.chat.type
-            
-            if chat_type == constants.PRIVATE:
-                chat_name: str = message.chat.full_name
-            else: 
-                chat_name: str = message.chat.title
-                
             conversation_logger.info(f"BOT ({constants.BOT_USERNAME}) in {chat_type} ({repr(chat_name)}): {repr(response)}")
         return response
     return wrapper
@@ -111,8 +61,7 @@ def logging_errors(func):
         
 # Commands
 
-@logging_bot_response
-@logging_incoming_messages
+@logging_messages
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [
@@ -127,15 +76,13 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(response, reply_markup=reply_markup)
     return response
  
-@logging_bot_response
-@logging_incoming_messages  
+@logging_messages
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     response = constants.HELP
     await update.message.reply_text(response)
     return response
 
-@logging_bot_response
-@logging_incoming_messages
+@logging_messages
 async def all_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.chat.id == constants.CHAT_ID:
         response = ", ".join(f"[@{k}](tg://user?id={v})" for k, v in constants.TEAMMATES.items())
@@ -146,8 +93,7 @@ async def all_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Buttons
 
-@logging_bot_response
-@logging_incoming_messages
+@logging_messages
 async def start_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Parses the CallbackQuery and updates the message text."""
     
@@ -167,8 +113,7 @@ async def start_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(text=response)
     return response
     
-@logging_bot_response
-@logging_incoming_messages
+@logging_messages
 async def pamyatka_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Parses the CallbackQuery and updates the message text."""
     
@@ -188,9 +133,7 @@ async def pamyatka_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_edited_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return
 
-
-@logging_bot_response 
-@logging_incoming_messages
+@logging_messages
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[InlineKeyboardButton(constants.YES, callback_data="y")], [InlineKeyboardButton(constants.NO, callback_data="n")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -216,8 +159,7 @@ def handle_response(update: Update, text: str):
     return response, reply_to_message_id
 
 
-@logging_bot_response
-@logging_incoming_messages
+@logging_messages
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_type: str = update.message.chat.type
     text: str = update.message.text
@@ -234,34 +176,31 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(response, parse_mode=constants.MARKDDOWN, reply_to_message_id=reply_to_message_id)
     return response
  
-@logging_bot_response
-@logging_incoming_messages
+@logging_messages
 async def handle_suki(update: Update, context: ContextTypes.DEFAULT_TYPE):
     response: str = constants.STICKER_WE
     await context.bot.send_sticker(chat_id=update.message.chat_id, sticker=response)
     return response  
 
-@logging_bot_response
-@logging_incoming_messages
+@logging_messages
 async def handle_sashechka(update: Update, context: ContextTypes.DEFAULT_TYPE):
     response: str = choice(constants.STICKERS_SASHKA)
     await context.bot.send_sticker(chat_id=update.message.chat_id, sticker=response)
     return response
 
-@logging_bot_response
-@logging_incoming_messages
+@logging_messages
 async def handle_silence(update: Update, context: ContextTypes.DEFAULT_TYPE):
     response: str = constants.STICKER_SILENCE
     await context.bot.send_sticker(chat_id=update.message.chat_id, sticker=response)
     return response
 
-@logging_bot_response    
+@logging_messages  
 async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     response: str = constants.NO_COMMAND_FOUND_MESSAGE
     await context.bot.send_message(chat_id=update.effective_chat.id, text=response)
     return response
 
-@logging_incoming_messages
+@logging_messages
 async def handle_default(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return    
 
@@ -274,7 +213,10 @@ if __name__ == "__main__":
     print("Starting bot...")
     app = Application.builder().token(constants.TOKEN).build()
     
+    app.add_handler(MessageHandler(filters.UpdateType.EDITED_MESSAGE, handle_edited_messages))
+    
     # Commands
+    
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("all", all_command))
@@ -288,7 +230,6 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.Regex(re.compile("сашечк", flags=re.IGNORECASE)), handle_sashechka))
     app.add_handler(MessageHandler(filters.Regex(re.compile("молчи", flags=re.IGNORECASE)), handle_silence))
     app.add_handler(MessageHandler(filters.Regex(re.compile("кто мы|мы кто", flags=re.IGNORECASE)), handle_suki))
-    app.add_handler(MessageHandler(filters.UpdateType.EDITED_MESSAGE, handle_edited_messages))
     app.add_handler(MessageHandler(filters.TEXT, handle_message))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.ALL, handle_default))
